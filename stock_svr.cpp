@@ -212,45 +212,6 @@ void prepare_data(const vector<double>& data, int n_days, vector<vector<double>>
     }
 }
 
-// Normalize the data
-// void normalize(std::vector<std::vector<double>>& X, std::vector<double>& y)
-// {
-//     // Normalize features (column-wise)
-//     for (size_t j = 0; j < X[0].size(); j++)
-//     {
-//         double mean = 0.0, stddev = 0.0;
-//         for (size_t i = 0; i < X.size(); i++)
-//         {
-//             mean += X[i][j];
-//         }
-//         mean /= X.size();
-//         for (size_t i = 0; i < X.size(); i++)
-//         {
-//             stddev += (X[i][j] - mean) * (X[i][j] - mean);
-//         }
-//         stddev = std::sqrt(stddev / X.size());
-//         for (size_t i = 0; i < X.size(); i++)
-//         {
-//             X[i][j] = (X[i][j] - mean) / (stddev + 1e-8);
-//         }
-//     }
-
-//     // Normalize target
-//     double mean_y = 0.0, stddev_y = 0.0;
-//     for (size_t i = 0; i < y.size(); i++)
-//     {
-//         mean_y += y[i];
-//     }
-//     mean_y /= y.size();
-//     for (size_t i = 0; i < y.size(); ++i) {
-//         stddev_y += (y[i] - mean_y) * (y[i] - mean_y);
-//     }
-//     stddev_y = std::sqrt(stddev_y / y.size());
-//     for (size_t i = 0; i < y.size(); ++i) {
-//         y[i] = (y[i] - mean_y) / (stddev_y + 1e-8);
-//     }
-// }
-
 vector<double> read_data(const std::string& filename)
 {
     std::vector<double> data;
@@ -300,9 +261,6 @@ int main() {
 
     vector<vector<double>> X_scaled = scaler_X.transform(X_train);
     vector<double> y_scaled = scaler_y.transform(y_train);
-
-    // Normalize the data
-    // normalize(X_train, y_train);
 
     // Train SVR model
     StockSVR svr(0.001, 1.0, 1000, 0.1);
