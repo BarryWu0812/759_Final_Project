@@ -11,6 +11,7 @@
 using std::vector;
 
 // StockSVR class for support vector regression
+
 double dot_product(const std::vector<double>& v1, const std::vector<double>& v2)
 {
     double result = 0.0;
@@ -20,75 +21,6 @@ double dot_product(const std::vector<double>& v1, const std::vector<double>& v2)
     }
     return result;
 }
-
-class StockSVR {
-private:
-    double lr;       // Learning rate
-    double C;        // Regularization penalty
-    int n_iters;     // Number of iterations for training
-    double epsilon;  // Epsilon-insensitive margin
-    std::vector<double> w;  // Weights
-    double b;        // Bias
-
-public:
-    StockSVR(double learning_rate, double penalty, int iterations, double eps)
-        : lr(learning_rate), C(penalty), n_iters(iterations), epsilon(eps), b(0.0) {}
-
-    // Train the SVR model
-    void fit(const std::vector<std::vector<double>>& X, const std::vector<double>& y) {
-        int n_samples = X.size();
-        int n_features = X[0].size();
-
-        // Initialize weights and bias
-        w.resize(n_features, 0.0);
-
-        // Gradient Descent
-        for (int iter = 0; iter < n_iters; iter++)
-        {
-            for (int i = 0; i < n_samples; i++)
-            {
-                // Compute the predicted value
-                double y_pred = dot_product(X[i], w) + b;
-                double loss = y[i] - y_pred;
-
-                // Update weights and bias based on loss
-                if (std::abs(loss) > epsilon)
-                {
-                    for (int j = 0; j < n_features; ++j)
-                    {
-                        w[j] -= lr * (w[j] - C * X[i][j] * sign(loss));
-                    }
-                    b -= lr * (-C * sign(loss));
-                }
-                else
-                {
-                    for (int j = 0; j < n_features; ++j)
-                    {
-                        w[j] -= lr * w[j];
-                    }
-                }
-            }
-        }
-    }
-
-    // Predict values for new data
-    vector<double> predict(const vector<vector<double>>& X)
-    {
-        std::vector<double> predictions;
-        for (const auto& x : X)
-        {
-            predictions.push_back(dot_product(x, w) + b);
-        }
-        return predictions;
-    }
-
-private:
-    // Helper function: Compute the sign of a value
-    int sign(double value)
-    {
-        return (value > 0) - (value < 0);
-    }
-};
 
 class StandardScaler {
 private:
@@ -193,6 +125,146 @@ public:
     }
 };
 
+class StockSVR {
+private:
+    double lr;       // Learning rate
+    double C;        // Regularization penalty
+    int n_iters;     // Number of iterations for training
+    double epsilon;  // Epsilon-insensitive margin
+    std::vector<double> w;  // Weights
+    double b;        // Bias
+
+public:
+    StockSVR(double learning_rate, double penalty, int iterations, double eps)
+        : lr(learning_rate), C(penalty), n_iters(iterations), epsilon(eps), b(0.0) {}
+
+    // Train the SVR model
+    void fit(const std::vector<std::vector<double>>& X, const std::vector<double>& y, int batch_size)
+    {
+        int n_samples = X.size();
+        int n_features = X[0].size();
+
+        // Initialize weights and bias
+        w.resize(n_features, 0.0);
+
+        // Gradient Descent
+        for (int iter = 0; iter < n_iters; iter++)
+        {
+            for (int batch_start = 0; batch_start < n_samples; batch_start += batch_size)
+            {
+                int batch_end = std::min(batch_start + batch_size, n_samples);
+
+                // Accumulate gradients for the batch
+                std::vector<double> grad_w(n_features, 0.0);
+                double grad_b = 0.0;
+
+                for (int i = batch_start; i < batch_end; i++)
+                {
+                    // Compute the predicted value
+                    double y_pred = dot_product(X[i], w) + b;
+                    double loss = y[i] - y_pred;
+
+                    // Update gradients if hinge loss condition is met
+                    if (std::abs(loss) > epsilon)
+                    {
+                        for (int j = 0; j < n_features; ++j) {
+                            grad_w[j] += -C * X[i][j] * sign(loss);
+                        }
+                        grad_b += -C * sign(loss);
+                    }
+                    else
+                    {
+                        for (int j = 0; j < n_features; ++j)
+                        {
+                            grad_w[j] += w[j];
+                        }
+                    }
+                }
+
+                // Apply accumulated gradients to weights and bias
+                for (int j = 0; j < n_features; ++j) {
+                    w[j] -= lr * (w[j] + grad_w[j] / batch_size);
+                }
+                b -= lr * (grad_b / batch_size);
+            }
+        }
+    }
+
+    // Predict values for new data
+    vector<double> predict(const vector<vector<double>>& X)
+    {
+        std::vector<double> predictions;
+        for (const auto& x : X)
+        {
+            predictions.push_back(dot_product(x, w) + b);
+        }
+        return predictions;
+    }
+
+private:
+    // Helper function: Compute the sign of a value
+    int sign(double value)
+    {
+        return (value > 0) - (value < 0);
+    }
+};
+
+double cross_validate(StockSVR& model, const vector<vector<double>>& X, const vector<double>& y, int k, int batch_size)
+{
+    int n_samples = X.size();
+    int fold_size = n_samples / k;
+    double total_mse = 0.0;
+
+    for (int fold = 0; fold < k; fold++)
+    {
+        // Determine fold start and end indices
+        int fold_start = fold * fold_size;
+        int fold_end = (fold == k - 1) ? n_samples : fold_start + fold_size;
+
+        // Create training and validation splits
+        vector<vector<double>> X_train, X_val;
+        vector<double> y_train, y_val;
+
+        for (int i = 0; i < n_samples; i++) {
+            if (i >= fold_start && i < fold_end) {
+                X_val.push_back(X[i]);
+                y_val.push_back(y[i]);
+            } else {
+                X_train.push_back(X[i]);
+                y_train.push_back(y[i]);
+            }
+        }
+
+        // Scale the data
+        StandardScaler scaler_X, scaler_y;
+        scaler_X.fit(X_train);
+        scaler_y.fit(y_train);
+
+        vector<vector<double>> X_train_scaled = scaler_X.transform(X_train);
+        vector<vector<double>> X_val_scaled = scaler_X.transform(X_val);
+        vector<double> y_train_scaled = scaler_y.transform(y_train);
+        vector<double> y_val_scaled = scaler_y.transform(y_val);
+
+        // Train the model
+        model.fit(X_train_scaled, y_train_scaled, batch_size);
+
+        // Predict on validation set
+        vector<double> predictions = model.predict(X_val_scaled);
+        predictions = scaler_y.inverse_transform(predictions);
+
+        // Compute MSE
+        double mse = 0.0;
+        for (size_t i = 0; i < y_val.size(); i++) {
+            mse += std::pow(y_val[i] - predictions[i], 2);
+        }
+        mse /= y_val.size();
+        total_mse += mse;
+
+        std::cout << "Fold " << fold + 1 << " MSE: " << mse << std::endl;
+    }
+
+    return total_mse / k;
+}
 
 // Prepare data for training (rolling window)
 void prepare_data(const vector<double>& data, int n_days, vector<vector<double>>& X, vector<double>& y)
@@ -241,6 +313,8 @@ int main() {
     std::string data_filename = "AAPL_2024-11-28.csv";
     vector<double> data = read_data(data_filename);
     int n_days = 5; // Number of days to use as features
+    int batch_size = 32;
+    int k_folds = 5;        // Number of folds for cross-validation
 
     // Prepare the data
     vector<vector<double>> X;
@@ -264,13 +338,30 @@ int main() {
 
     // Train SVR model
     StockSVR svr(0.001, 1.0, 1000, 0.1);
-    svr.fit(X_scaled, y_scaled);
+
+    // // Perform k-fold cross-validation
+    // std::cout << "Starting cross-validation..." << std::endl;
+    // double avg_mse = cross_validate(svr, X, y, k_folds, batch_size);
+    // std::cout << "Average MSE across " << k_folds << " folds: " << avg_mse << std::endl;
+
+
+    svr.fit(X_scaled, y_scaled, batch_size);
 
     // Make predictions
     X_test = scaler_X.transform(X_test);
     vector<double> predictions = svr.predict(X_test);
     predictions = scaler_y.inverse_transform(predictions);
     // y_test = scaler_y.inverse_transform(y_test);
+
+    // Compute final MSE on the test set
+    double test_mse = 0.0;
+    for (size_t i = 0; i < y_test.size(); i++) {
+        test_mse += std::pow(y_test[i] - predictions[i], 2);
+    }
+    test_mse /= y_test.size();
+
+    // Print results
+    std::cout << "Test set MSE: " << test_mse << std::endl;
 
     // Print results
     std::cout << "True vs Predicted:" << std::endl;
