@@ -57,7 +57,7 @@ __global__ void dot_product_kernel(const double* X, const double* w, double* y, 
         y[row] = sum;
 
         // Write the final result
-        if (row < n_samples)
+        if (idx < n_samples)
             y[row] += b; // Add the bias term
     }
 }
@@ -67,7 +67,7 @@ __global__ void update_weights_kernel(double* w, double* grad_w, double* b, doub
 {
     int idx = threadIdx.x + blockIdx.x * blockDim.x;
     if (idx < n_features) {
-        w[idx] -= lr * (grad_w[idx] / batch_size);
+        w[idx] -= lr * (w[idx] + grad_w[idx] / batch_size);
     }
     if (idx == 0)
         atomicAddDouble(b, -lr * (*grad_b / batch_size));
@@ -103,6 +103,14 @@ __global__ void compute_gradients_kernel(const double* X, const double* y, const
             }
             local_grad_b = -C * ((loss > 0) - (loss < 0));
         }
+        else
+        {
+            for (int j = 0; j < n_features; ++j)
+            {
+                atomicAddDouble(&grad_w[j], -C * X[idx * n_features + j] * ((loss > 0) - (loss < 0)));
+            }
+        }
+
     }
 
     // Use shared memory to reduce gradients for `grad_b`
@@ -110,16 +118,29 @@ __global__ void compute_gradients_kernel(const double* X, const double* y, const
     __syncthreads();
 
     // Reduce shared memory to compute global gradient for bias
-    for (int s = blockDim.x / 2; s > 0; s >>= 1) {
-        if (tid < s) {
-            shared_mem[tid] += shared_mem[tid + s];
+    // for (int s = blockDim.x / 2; s > 0; s >>= 1) {
+    //     if (tid < s) {
+    //         shared_mem[tid] += shared_mem[tid + s];
+    //     }
+    //     __syncthreads();
+    // }
+    for (unsigned int s = blockDim.x; s / 2 > 0; s >>= 1)
+    {
+        if (tid < s / 2)
+        {
+            shared_mem[tid] += shared_mem[tid + s / 2];
+            if (s % 2 == 1 && tid == s / 2 - 1)
+            {
+                shared_mem[tid] += shared_mem[tid + s / 2 + 1];
+            }
         }
         __syncthreads();
     }
 
     // Thread 0 updates the global bias gradient
     if (tid == 0) {
-        atomicAddDouble(grad_b, shared_mem[tid]);
+        // atomicAddDouble(grad_b, shared_mem[tid]);
+        *grad_b = shared_mem[tid];
     }
 }
 
@@ -233,16 +254,16 @@ class StockSVR {
 private:
     double lr, C, epsilon;
     int n_iters;
-    double* d_w, * d_grad_w, * d_grad_b;
+    // double* d_w, * d_grad_w, * d_grad_b;
     std::vector<double> w;
     double b;
 
 public:
     StockSVR(double learning_rate, double penalty, int iterations, double eps)
         : lr(learning_rate), C(penalty), n_iters(iterations), epsilon(eps) {
-        d_w = nullptr;
-        d_grad_w = nullptr;
-        d_grad_b = nullptr;
+        // d_w = nullptr;
+        // d_grad_w = nullptr;
+        // d_grad_b = nullptr;
     }
 
     void fit(const vector<vector<double>>& X, const vector<double>& y, int batch_size)
@@ -260,7 +281,7 @@ public:
         cudaMalloc(&d_grad_b, sizeof(double));
 
         // Initialize weights and bias on the host
-        vector<double> w(n_features, 0.0); // Initialize weights to 0
+        w.resize(n_features, 0.0); // Initialize weights to 0
         double b = 0.0;                   // Initialize bias to 0
 
         // Copy data to device
@@ -329,7 +350,7 @@ public:
         size_t n_features = X[0].size();
 
         vector<double> predictions(n_samples);
-        double* d_X, * d_w, * d_y;
+        double *d_X, *d_w, *d_y;
         double* h_X = new double[n_samples * n_features];
         double* h_w = new double[n_features];
 
@@ -361,7 +382,7 @@ public:
         int blocks_per_grid = (n_samples + threads_per_block - 1) / threads_per_block; // One block per row of `X`
         size_t shared_mem_size = threads_per_block * sizeof(double);
 
-        dot_product_kernel<<<blocks_per_grid, threads_per_block, shared_mem_size>>>(d_X, d_w, d_y, n_samples, n_features, b);
+        dot_product_kernel<<<blocks_per_grid, threads_per_block, shared_mem_size>>>(d_X, d_w, d_y, n_samples, n_features, this->b);
 
         // Copy predictions back to host
         cudaMemcpy(predictions.data(), d_y, n_samples * sizeof(double), cudaMemcpyDeviceToHost);
@@ -382,6 +403,9 @@ public:
 void prepare_data(const vector<double>& data, int n_days, vector<vector<double>>& X, vector<double>& y)
 {
     int n_samples = data.size() - n_days;
+
+    if (n_samples <= 0)
+        throw std::invalid_argument("Not enough data to prepare samples.");
 
     // Resize X and y
     X.resize(n_samples, std::vector<double>(n_days));
@@ -447,7 +471,7 @@ int main() {
     vector<double> y_scaled = scaler_y.transform(y_train);
 
     StockSVR svr(0.001, 1.0, 1000, 0.1);
-    svr.fit(X_scaled, y, batch_size);
+    svr.fit(X_scaled, y_scaled, batch_size);
 
     // Make predictions
     X_test = scaler_X.transform(X_test);
