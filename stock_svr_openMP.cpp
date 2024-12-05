@@ -8,123 +8,27 @@
 #include <sstream>
 #include <iomanip>
 #include <omp.h>
+#include <chrono>
 
 using std::vector;
+using std::chrono::high_resolution_clock;
+using std::chrono::duration;
+using std::cout;
+using std::endl;
 
 // StockSVR class for support vector regression
+
 double dot_product(const std::vector<double>& v1, const std::vector<double>& v2)
 {
     double result = 0.0;
-    for (size_t i = 0; i < v1.size(); i++)
-    {
+
+    #pragma omp parallel for reduction(+:result)
+    for (size_t i = 0; i < v1.size(); i++) {
         result += v1[i] * v2[i];
     }
+
     return result;
 }
-
-class StockSVR {
-private:
-    double lr;       // Learning rate
-    double C;        // Regularization penalty
-    int n_iters;     // Number of iterations for training
-    double epsilon;  // Epsilon-insensitive margin
-    std::vector<double> w;  // Weights
-    double b;        // Bias
-
-public:
-    StockSVR(double learning_rate, double penalty, int iterations, double eps)
-        : lr(learning_rate), C(penalty), n_iters(iterations), epsilon(eps), b(0.0) {}
-
-    // Train the SVR model
-    void fit(const std::vector<std::vector<double>>& X, const std::vector<double>& y) {
-        int n_samples = X.size();
-        int n_features = X[0].size();
-
-        // Initialize weights and bias
-        w.resize(n_features, 0.0);
-
-        // Gradient Descent
-        for (int iter = 0; iter < n_iters; iter++)
-        {
-            double local_w[n_features];
-            double local_b = 0.0;
-            #pragma omp parallel reduction(+:local_w[:n_features], local_b)
-            {
-                //std::vector<double> thread_w(n_features, 0.0);
-                //double thread_b = 0.0;
-                
-                #pragma omp for
-                for(int i =0; i< n_samples; i++){
-                    // Compute the predicted value
-                    double y_pred = dot_product(X[i], w) + b;
-                    double loss = y[i] - y_pred;
-                    
-                    if(std::abs(loss) > epsilon){
-                        for (int j=0; j< n_features; j++){
-                            local_w[j] = local_w[j] - lr * (w[j] - C * X[i][j] * sign(loss));
-                        }
-                        local_b = local_b - lr * (-C * sign(loss));
-                    }else{
-                        for (int j=0; j<n_features; j++){
-                            local_w[j] = local_w[j] - lr * w[j];
-                        }
-                    }
-                }
-            }
-            
-            // Normalize the updates by dividing by n_samples
-            for (int j = 0; j < n_features; j++) {
-                w[j] += local_w[j] / n_samples; // Average gradient for weights
-            }
-            b += local_b / n_samples; // Average gradient for bias
-            
-            
-            
-            
-//            for (int i = 0; i < n_samples; i++)
-//            {
-//                // Compute the predicted value
-//                double y_pred = dot_product(X[i], w) + b;
-//                double loss = y[i] - y_pred;
-//
-//                // Update weights and bias based on loss
-//                if (std::abs(loss) > epsilon)
-//                {
-//                    for (int j = 0; j < n_features; ++j)
-//                    {
-//                        w[j] -= lr * (w[j] - C * X[i][j] * sign(loss));
-//                    }
-//                    b -= lr * (-C * sign(loss));
-//                }
-//                else
-//                {
-//                    for (int j = 0; j < n_features; ++j)
-//                    {
-//                        w[j] -= lr * w[j];
-//                    }
-//                }
-//            }
-        }
-    }
-
-    // Predict values for new data
-    vector<double> predict(const vector<vector<double>>& X)
-    {
-        std::vector<double> predictions;
-        for (const auto& x : X)
-        {
-            predictions.push_back(dot_product(x, w) + b);
-        }
-        return predictions;
-    }
-
-private:
-    // Helper function: Compute the sign of a value
-    int sign(double value)
-    {
-        return (value > 0) - (value < 0);
-    }
-};
 
 class StandardScaler {
 private:
@@ -229,6 +133,156 @@ public:
     }
 };
 
+class StockSVR {
+private:
+    double lr;       // Learning rate
+    double C;        // Regularization penalty
+    int n_iters;     // Number of iterations for training
+    double epsilon;  // Epsilon-insensitive margin
+    std::vector<double> w;  // Weights
+    double b;        // Bias
+
+public:
+    StockSVR(double learning_rate, double penalty, int iterations, double eps)
+        : lr(learning_rate), C(penalty), n_iters(iterations), epsilon(eps), b(0.0) {}
+
+    // Train the SVR model
+    void fit(const std::vector<std::vector<double>>& X, const std::vector<double>& y, int batch_size)
+    {
+        int n_samples = X.size();
+        int n_features = X[0].size();
+
+        // Initialize weights and bias
+        w.resize(n_features, 0.0);
+
+        // Gradient Descent
+        for (int iter = 0; iter < n_iters; iter++) {
+            for (int batch_start = 0; batch_start < n_samples; batch_start += batch_size) {
+                int batch_end = std::min(batch_start + batch_size, n_samples);
+
+                // Accumulate gradients for the batch
+                std::vector<double> grad_w(n_features, 0.0);
+                double grad_b = 0.0;
+
+                #pragma omp parallel
+                {
+                    std::vector<double> thread_grad_w(n_features, 0.0); // Thread-local gradient for weights
+                    double thread_grad_b = 0.0;                         // Thread-local gradient for bias
+
+                    #pragma omp for
+                    for (int i = batch_start; i < batch_end; i++) {
+                        // Compute the predicted value
+                        double y_pred = dot_product(X[i], w) + b;
+                        double loss = y[i] - y_pred;
+
+                        // Update gradients if hinge loss condition is met
+                        if (std::abs(loss) > epsilon) {
+                            for (int j = 0; j < n_features; ++j) {
+                                thread_grad_w[j] += -C * X[i][j] * sign(loss);
+                            }
+                            thread_grad_b += -C * sign(loss);
+                        } else {
+                            for (int j = 0; j < n_features; ++j) {
+                                thread_grad_w[j] += w[j];
+                            }
+                        }
+                    }
+
+                    // Aggregate thread-local gradients into global batch gradients
+                    #pragma omp critical
+                    {
+                        for (int j = 0; j < n_features; ++j) {
+                            grad_w[j] += thread_grad_w[j];
+                        }
+                        grad_b += thread_grad_b;
+                    }
+                }
+
+                // Apply accumulated gradients to weights and bias
+                for (int j = 0; j < n_features; ++j) {
+                    w[j] -= lr * (w[j] + grad_w[j] / batch_size);
+                }
+                b -= lr * (grad_b / batch_size);
+            }
+        }
+    }
+
+
+    // Predict values for new data
+    vector<double> predict(const vector<vector<double>>& X)
+    {
+        std::vector<double> predictions;
+        for (const auto& x : X)
+        {
+            predictions.push_back(dot_product(x, w) + b);
+        }
+        return predictions;
+    }
+
+private:
+    // Helper function: Compute the sign of a value
+    int sign(double value)
+    {
+        return (value > 0) - (value < 0);
+    }
+};
+
+double cross_validate(StockSVR& model, const vector<vector<double>>& X, const vector<double>& y, int k, int batch_size)
+{
+    int n_samples = X.size();
+    int fold_size = n_samples / k;
+    double total_mse = 0.0;
+
+    for (int fold = 0; fold < k; fold++)
+    {
+        // Determine fold start and end indices
+        int fold_start = fold * fold_size;
+        int fold_end = (fold == k - 1) ? n_samples : fold_start + fold_size;
+
+        // Create training and validation splits
+        vector<vector<double>> X_train, X_val;
+        vector<double> y_train, y_val;
+
+        for (int i = 0; i < n_samples; i++) {
+            if (i >= fold_start && i < fold_end) {
+                X_val.push_back(X[i]);
+                y_val.push_back(y[i]);
+            } else {
+                X_train.push_back(X[i]);
+                y_train.push_back(y[i]);
+            }
+        }
+
+        // Scale the data
+        StandardScaler scaler_X, scaler_y;
+        scaler_X.fit(X_train);
+        scaler_y.fit(y_train);
+
+        vector<vector<double>> X_train_scaled = scaler_X.transform(X_train);
+        vector<vector<double>> X_val_scaled = scaler_X.transform(X_val);
+        vector<double> y_train_scaled = scaler_y.transform(y_train);
+        vector<double> y_val_scaled = scaler_y.transform(y_val);
+
+        // Train the model
+        model.fit(X_train_scaled, y_train_scaled, batch_size);
+
+        // Predict on validation set
+        vector<double> predictions = model.predict(X_val_scaled);
+        predictions = scaler_y.inverse_transform(predictions);
+
+        // Compute MSE
+        double mse = 0.0;
+        for (size_t i = 0; i < y_val.size(); i++) {
+            mse += std::pow(y_val[i] - predictions[i], 2);
+        }
+        mse /= y_val.size();
+        total_mse += mse;
+
+        std::cout << "Fold " << fold + 1 << " MSE: " << mse << std::endl;
+    }
+
+    return total_mse / k;
+}
 
 // Prepare data for training (rolling window)
 void prepare_data(const vector<double>& data, int n_days, vector<vector<double>>& X, vector<double>& y)
@@ -276,7 +330,9 @@ void save_to_csv(const std::string& filename, const std::vector<double>& data)
 int main() {
     std::string data_filename = "AAPL_2024-11-28.csv";
     vector<double> data = read_data(data_filename);
-    int n_days = 5; // Number of days to use as features
+    int n_days = 10; // Number of days to use as features
+    int batch_size = 500;
+    int k_folds = 5;        // Number of folds for cross-validation
 
     // Prepare the data
     vector<vector<double>> X;
@@ -300,19 +356,54 @@ int main() {
 
     // Train SVR model
     StockSVR svr(0.001, 1.0, 1000, 0.1);
-    svr.fit(X_scaled, y_scaled);
 
+    // // Perform k-fold cross-validation
+    // std::cout << "Starting cross-validation..." << std::endl;
+    // double avg_mse = cross_validate(svr, X, y, k_folds, batch_size);
+    // std::cout << "Average MSE across " << k_folds << " folds: " << avg_mse << std::endl;
+
+    duration<double, std::milli> duration_sec_train;
+    auto start_train = high_resolution_clock::now();
+    
+    svr.fit(X_scaled, y_scaled, batch_size);
+    
+    auto end_train = high_resolution_clock::now();
+    duration_sec_train = std::chrono::duration_cast<duration<double, std::milli>>(end_train-start_train);
+    
     // Make predictions
     X_test = scaler_X.transform(X_test);
+    
+    duration<double, std::milli> duration_sec_predict;
+    auto start_predict = high_resolution_clock::now();
+    
     vector<double> predictions = svr.predict(X_test);
+    
+    auto end_predict = high_resolution_clock::now();
+    duration_sec_predict = std::chrono::duration_cast<duration<double, std::milli>>(end_predict-start_predict);
+    
     predictions = scaler_y.inverse_transform(predictions);
     // y_test = scaler_y.inverse_transform(y_test);
+
+    // Compute final MSE on the test set
+    double test_mse = 0.0;
+    for (size_t i = 0; i < y_test.size(); i++) {
+        test_mse += std::pow(y_test[i] - predictions[i], 2);
+    }
+    test_mse /= y_test.size();
+
+    // Print results
+    std::cout << "Test set MSE: " << test_mse << std::endl;
 
     // Print results
     std::cout << "True vs Predicted:" << std::endl;
     for (size_t i = 0; i < y_test.size(); ++i) {
         std::cout << "True: " << y_test[i] << ", Predicted: " << predictions[i] << std::endl;
     }
+    
+    // Print time result
+    cout << "Model training time is: " << duration_sec_train.count() << "ms" << endl;
+    cout << "Prediction time is: " << duration_sec_predict.count() << "ms" << endl;
+    
 
     save_to_csv("y_test.csv", y_test);
     save_to_csv("predictions.csv", predictions);
@@ -322,3 +413,4 @@ int main() {
 
     return 0;
 }
+
