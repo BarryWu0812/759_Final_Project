@@ -177,11 +177,13 @@ public:
 
                         // Update gradients if hinge loss condition is met
                         if (std::abs(loss) > epsilon) {
+                            #pragma omp parallel for
                             for (int j = 0; j < n_features; ++j) {
                                 thread_grad_w[j] += -C * X[i][j] * sign(loss);
                             }
                             thread_grad_b += -C * sign(loss);
                         } else {
+                            #pragma omp parallel for
                             for (int j = 0; j < n_features; ++j) {
                                 thread_grad_w[j] += w[j];
                             }
@@ -330,8 +332,8 @@ void save_to_csv(const std::string& filename, const std::vector<double>& data)
 int main() {
     std::string data_filename = "AAPL_2024-11-28.csv";
     vector<double> data = read_data(data_filename);
-    int n_days = 10; // Number of days to use as features
-    int batch_size = 500;
+    int n_days = 200; // Number of days to use as features
+    int batch_size = 100;
     int k_folds = 5;        // Number of folds for cross-validation
 
     // Prepare the data

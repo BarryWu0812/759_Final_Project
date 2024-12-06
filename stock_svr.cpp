@@ -7,8 +7,13 @@
 #include <fstream>
 #include <sstream>
 #include <iomanip>
+#include <chrono>
 
 using std::vector;
+using std::chrono::high_resolution_clock;
+using std::chrono::duration;
+using std::cout;
+using std::endl;
 
 // StockSVR class for support vector regression
 
@@ -312,8 +317,8 @@ void save_to_csv(const std::string& filename, const std::vector<double>& data)
 int main() {
     std::string data_filename = "AAPL_2024-11-28.csv";
     vector<double> data = read_data(data_filename);
-    int n_days = 5; // Number of days to use as features
-    int batch_size = 32;
+    int n_days = 200; // Number of days to use as features
+    int batch_size = 100;
     int k_folds = 5;        // Number of folds for cross-validation
 
     // Prepare the data
@@ -345,11 +350,25 @@ int main() {
     // std::cout << "Average MSE across " << k_folds << " folds: " << avg_mse << std::endl;
 
 
+    duration<double, std::milli> duration_sec_train;
+    auto start_train = high_resolution_clock::now();
+    
     svr.fit(X_scaled, y_scaled, batch_size);
-
+    
+    auto end_train = high_resolution_clock::now();
+    duration_sec_train = std::chrono::duration_cast<duration<double, std::milli>>(end_train-start_train);
+    
     // Make predictions
     X_test = scaler_X.transform(X_test);
+    
+    duration<double, std::milli> duration_sec_predict;
+    auto start_predict = high_resolution_clock::now();
+    
     vector<double> predictions = svr.predict(X_test);
+    
+    auto end_predict = high_resolution_clock::now();
+    duration_sec_predict = std::chrono::duration_cast<duration<double, std::milli>>(end_predict-start_predict);
+    
     predictions = scaler_y.inverse_transform(predictions);
     // y_test = scaler_y.inverse_transform(y_test);
 
@@ -369,6 +388,10 @@ int main() {
         std::cout << "True: " << y_test[i] << ", Predicted: " << predictions[i] << std::endl;
     }
 
+    // Print time result
+    cout << "Model training time is: " << duration_sec_train.count() << "ms" << endl;
+    cout << "Prediction time is: " << duration_sec_predict.count() << "ms" << endl;
+    
     save_to_csv("y_test.csv", y_test);
     save_to_csv("predictions.csv", predictions);
 
